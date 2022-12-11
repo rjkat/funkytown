@@ -236,11 +236,17 @@ parseBoxes src = boxes
 
     makeRawBoxType :: [Dir] -> BoxType
     makeRawBoxType [_] = Box1
-    makeRawBoxType [S,N] = Box2Opp
-    makeRawBoxType [W,E] = Box2Opp
+    makeRawBoxType [E,W] = Box2Opp
     makeRawBoxType [E,N] = Box2Adj
-    makeRawBoxType [S,E] = Box2Adj
+    makeRawBoxType [E,S] = Box2Adj
+    makeRawBoxType [W,E] = Box2Opp
+    makeRawBoxType [W,N] = Box2Adj
     makeRawBoxType [W,S] = Box2Adj
+    makeRawBoxType [S,N] = Box2Opp
+    makeRawBoxType [S,E] = Box2Adj
+    makeRawBoxType [S,W] = Box2Adj
+    makeRawBoxType [N,S] = Box2Opp
+    makeRawBoxType [N,E] = Box2Adj
     makeRawBoxType [N,W] = Box2Adj
     makeRawBoxType [_,_,_] = Box3
     makeRawBoxType [_,_,_,_] = Box4
@@ -316,7 +322,7 @@ parseDeclarations (scope,src) =
     boxes = Data.Map.fromList [(boxId box,box) | box <- parseBoxes src]
 
     distinctGraphs :: [Map (Int,Int) Box]
-    distinctGraphs = fst (Data.Map.fold collectDistinctGraphs ([],Data.Set.empty) boxes)
+    distinctGraphs = fst (Data.Map.foldr collectDistinctGraphs ([],Data.Set.empty) boxes)
 
     collectDistinctGraphs :: Box -> ([Map (Int,Int) Box],Set (Int,Int)) -> ([Map (Int,Int) Box],Set (Int,Int))
     collectDistinctGraphs box (graphs,collected)
@@ -331,7 +337,7 @@ parseDeclarations (scope,src) =
         collect (_:conns) graph = collect conns graph
 
     makeDeclaration :: Map (Int,Int) Box -> Declaration
-    makeDeclaration graph = Data.Map.fold buildDeclaration Declaration{declName=Nothing,declScope=scope,declPrivate=False,declId=(0,0),declInputs=Data.Set.empty,declOutputs=Data.Set.empty} graph
+    makeDeclaration graph = Data.Map.foldr buildDeclaration Declaration{declName=Nothing,declScope=scope,declPrivate=False,declId=(0,0),declInputs=Data.Set.empty,declOutputs=Data.Set.empty} graph
 
     buildDeclaration :: Box -> Declaration -> Declaration
     buildDeclaration Box{boxType=boxType,boxId=boxId,boxPrivate=boxPrivate,boxContents=boxContents,boxN=n,boxS=s,boxE=e,boxW=w} decl =
@@ -531,7 +537,7 @@ flowErrors (decl@Declaration{declScope=scope},flows) = concat [concatMap unknown
     -- input not connected to output or output not connected to input
     connectionMismatches :: FlowBox -> [String]
     connectionMismatches FlowBox{flowBoxId=boxId,flowIn=ins,flowOut=outs} =
-        Data.Map.fold checkFlowIn (Data.Map.fold checkFlowOut [] outs) ins
+        Data.Map.foldr checkFlowIn (Data.Map.foldr checkFlowOut [] outs) ins
       where
         checkFlowIn (dir,srcBoxId) errs
           | Data.Map.member dir (flowOut (flows Data.Map.! srcBoxId)) = errs
@@ -658,10 +664,10 @@ resolve (decl@Declaration{declScope=scope},flowBoxes) = Subprogram{decl=decl,out
       where (input1,input2,output1Dir,output2Dir) = box4Connections box
 
     subprogramOutputs :: [(Dir,ExprId)]
-    subprogramOutputs = Data.Map.fold findSubprogramOutputs [] flowBoxes
+    subprogramOutputs = Data.Map.foldr findSubprogramOutputs [] flowBoxes
       where
         findSubprogramOutputs FlowBox{flowBoxId=boxId,flowOut=outs} outputs =
-            Data.Map.foldWithKey (findSubprogramOutput boxId) outputs outs
+            Data.Map.foldrWithKey (findSubprogramOutput boxId) outputs outs
         findSubprogramOutput boxId flowDir (outputDir,Nothing) outputs = (outputDir,(flowDir,[(scope,boxId)])) : outputs
         findSubprogramOutput _ _ _ outputs = outputs
 
@@ -685,7 +691,7 @@ removeUnreachableFunctions (initialMains,initialSubprograms) = Data.Map.filter (
     walkReachables (walked,listToWalk) = walkReachables (foldl markReachable (walked,[]) listToWalk)
     markReachable (walked,listToWalk) subprogram@Subprogram{decl=decl,exprs=exprs}
       | decl `Data.Set.member` walked = (walked,listToWalk)
-      | otherwise = (Data.Set.insert decl walked,map (initialSubprograms Data.Map.!) (Data.Map.fold listCallees [] exprs) ++ listToWalk)
+      | otherwise = (Data.Set.insert decl walked,map (initialSubprograms Data.Map.!) (Data.Map.foldr listCallees [] exprs) ++ listToWalk)
     listCallees (ExprCall _ decl _ _ _) callees = decl:callees
     listCallees _ callees = callees
 
@@ -701,14 +707,14 @@ inliner (initialMains,initialSubprograms) = iterativeInline (filter isInlineable
     iterativeInline (subprogram:_) = inliner (map (inline subprogram) initialMains,fmap (inline subprogram) subprograms)
     inline Subprogram{decl=inlineDecl,outputs=inlineOutputs,exprs=inlineExprs} subprogram@Subprogram{exprs=exprs} = subprogram{exprs=exprsWithInlinedCalls}
       where
-        exprsWithInlinedCalls = Data.Map.foldWithKey inlineExpr Data.Map.empty exprs
+        exprsWithInlinedCalls = Data.Map.foldrWithKey inlineExpr Data.Map.empty exprs
         inlineExpr exprId (ExprCall elementId decl params dir _) exprs | decl == inlineDecl = exprs3
           where
             inlineExprId = fmap (elementId++)
             -- insert exprId ExprExpr to output!dir elementId++ExprId
             exprs2 = Data.Map.insert exprId (ExprExpr (inlineExprId (inlineOutputs Data.Map.! dir))) exprs
             -- insert inlineExprs with mapping (elementId++) to exprIds, except changing ExprInput to ExprExpr to params!inputDir
-            exprs3 = Data.Map.foldWithKey inlineCalledExpr exprs2 inlineExprs
+            exprs3 = Data.Map.foldrWithKey inlineCalledExpr exprs2 inlineExprs
             inlineCalledExpr calledExprId (ExprInput inputDir) exprs = Data.Map.insert (inlineExprId calledExprId) (ExprExpr (params Data.Map.! inputDir)) exprs
             inlineCalledExpr calledExprId calledExpr exprs = Data.Map.insert (inlineExprId calledExprId) (mapElementIds (elementId++) (mapExprIds inlineExprId calledExpr)) exprs
 
@@ -717,7 +723,7 @@ inliner (initialMains,initialSubprograms) = iterativeInline (filter isInlineable
 optimizer :: Subprogram -> Subprogram
 optimizer subprogram@Subprogram{outputs=outputs,exprs=exprs} = subprogram{outputs=optimizedOutputs,exprs=optimizedExprs}
   where
-    exprIdMap = Data.Map.foldWithKey findExprIdsToMap Data.Map.empty exprs
+    exprIdMap = Data.Map.foldrWithKey findExprIdsToMap Data.Map.empty exprs
     findExprIdsToMap oldExprId (ExprExpr newExprId) exprIdMap = Data.Map.insert oldExprId newExprId exprIdMap
     findExprIdsToMap _ _ exprIdMap = exprIdMap
 
@@ -895,7 +901,7 @@ forceStepCall callerState expr@(ExprCall elementId calleeDecl params resultDir _
     handleCallResult (forceStep callerStateBeforeCall{frame=initialCalleeFrame} (outputs (subprogram initialCalleeFrame) Data.Map.! resultDir))
   where
     (callerStateBeforeCall,initialCalleeFrame) = maybe (newFrame callerStateAfterEvalArgs (program callerStateAfterEvalArgs Data.Map.! calleeDecl) args) (\ frame -> (callerStateAfterEvalArgs,frame{inputs=args})) (Data.Map.lookup elementId (calleeFrames (frame callerStateAfterEvalArgs)))
-    (callerStateAfterEvalArgs,args) = Data.Map.foldWithKey evalArg (callerState,Data.Map.empty) params
+    (callerStateAfterEvalArgs,args) = Data.Map.foldrWithKey evalArg (callerState,Data.Map.empty) params
     evalArg paramDir paramExprId (callerStateEvalArg,args) = fmap ((flip (Data.Map.insert paramDir) args) . LazyInput) (eval callerStateEvalArg paramExprId) 
 
     -- replace callee frame with caller frame with callee frame in calleeFrames Map
@@ -961,7 +967,7 @@ shiftInteger a b
 newFrame :: State -> Subprogram -> Map Dir LazyValue -> (State,Frame)
 newFrame state@State{nextLambda=initialLambda} subprogram@Subprogram{exprs=exprs} args = (state{nextLambda=finalLambda},Frame{subprogram=subprogram,inputs=args,values=Data.Map.empty,lambdaIds=lambdaIds,lambdaInputs=Data.Map.empty,calleeFrames=Data.Map.empty})
   where
-    (finalLambda,lambdaIds) = Data.Map.fold enumerateLambdas (initialLambda,Data.Map.empty) exprs
+    (finalLambda,lambdaIds) = Data.Map.foldr enumerateLambdas (initialLambda,Data.Map.empty) exprs
     enumerateLambdas (ExprLambda elementId _ _) (nextLambda,lambdaIds) = (nextLambda+1,Data.Map.insert elementId nextLambda lambdaIds)
     enumerateLambdas _ (nextLambda,lambdaIds) = (nextLambda,lambdaIds)
 
